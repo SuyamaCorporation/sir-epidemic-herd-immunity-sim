@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SIR Epidemic Herd Immunity Spread Simulation</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+  canvas { image-rendering: pixelated; }
+  #chartCanvas { background: #0f172a; }
+</style>
+</head>
+<body class="bg-gray-900 min-h-screen flex flex-col items-center p-4">
+<h1 class="text-2xl font-bold text-white mb-1">🦠 SIR Epidemic Simulation</h1>
+<p class="text-gray-400 text-sm mb-4">Grid-based epidemic with herd immunity threshold</p>
+
+<div class="flex flex-col lg:flex-row gap-4 w-full max-w-5xl">
+  <div class="flex-1">
+    <canvas id="gridCanvas" width="400" height="400" class="rounded-xl border border-gray-700 w-full max-w-md mx-auto block" aria-label="Epidemic grid simulation"></canvas>
+    <div class="flex gap-3 mt-2 justify-center text-xs text-gray-400">
+      <span class="flex items-center gap-1"><span style="background:#e2e8f0;width:12px;height:12px;display:inline-block;border-radius:2px"></span>Susceptible</span>
+      <span class="flex items-center gap-1"><span style="background:#ef4444;width:12px;height:12px;display:inline-block;border-radius:2px"></span>Infected</span>
+      <span class="flex items-center gap-1"><span style="background:#22c55e;width:12px;height:12px;display:inline-block;border-radius:2px"></span>Recovered</span>
+      <span class="flex items-center gap-1"><span style="background:#3b82f6;width:12px;height:12px;display:inline-block;border-radius:2px"></span>Vaccinated</span>
+    </div>
+  </div>
+
+  <div class="flex-1 space-y-3">
+    <div class="bg-gray-800 rounded-xl p-4 space-y-3">
+      <div>
+        <label class="text-gray-300 text-sm">R₀ (Reproduction Number): <span id="r0Val" class="text-red-400 font-bold">2.5</span></label>
+        <input type="range" id="r0" min="1.0" max="5.0" step="0.1" value="2.5" class="w-full mt-1" aria-label="Basic reproduction number">
+      </div>
+      <div>
+        <label class="text-gray-300 text-sm">Vaccination Rate: <span id="vacVal" class="text-blue-400 font-bold">0%</span></label>
+        <input type="range" id="vac" min="0" max="80" step="1" value="0" class="w-full mt-1" aria-label="Vaccination rate percent">
+      </div>
+      <div>
+        <label class="text-gray-300 text-sm">Recovery Time (steps): <span id="recVal" class="text-green-400 font-bold">10</span></label>
+        <input type="range" id="rec" min="3" max="30" step="1" value="10" class="w-full mt-1" aria-label="Recovery time">
+      </div>
+      <div id="herdThresh" class="text-yellow-300 text-sm font-bold text-center py-1 bg-yellow-900 bg-opacity-40 rounded-lg"></div>
+    </div>
+    <div class="flex gap-2">
+      <button onclick="initSim()" class="flex-1 bg-blue-600 text-white py-2 rounded-lg font-bold hover:bg-blue-700">Reset</button>
+      <button onclick="togglePlay()" id="playBtn" class="flex-1 bg-green-600 text-white py-2 rounded-lg font-bold hover:bg-green-700">▶ Play</button>
+      <button onclick="stepOnce()" class="flex-1 bg-gray-600 text-white py-2 rounded-lg font-bold hover:bg-gray-700">Step</button>
+    </div>
+    <div id="stats" class="grid grid-cols-3 gap-2 text-center">
+      <div class="bg-gray-800 rounded-lg py-2"><div class="text-gray-400 text-xs">Susceptible</div><div id="sCount" class="text-white font-bold text-lg"></div></div>
+      <div class="bg-gray-800 rounded-lg py-2"><div class="text-red-400 text-xs">Infected</div><div id="iCount" class="text-white font-bold text-lg"></div></div>
+      <div class="bg-gray-800 rounded-lg py-2"><div class="text-green-400 text-xs">Recovered</div><div id="rCount" class="text-white font-bold text-lg"></div></div>
+    </div>
+    <div><div class="text-gray-300 text-sm mb-1 font-semibold">Population Curves</div>
+    <canvas id="chartCanvas" width="400" height="160" class="rounded-xl w-full" aria-label="SIR population chart"></canvas></div>
+  </div>
+</div>
+<script>
+const GRID_N = 80;
+const CELL = 400 / GRID_N;
+const S=0, I=1, R=2, V=3;
+
+let grid, infectTimer;
+let playing = false, animId = null;
+let history = []; // [{s,i,r}]
+const MAX_HIST = 300;
+let step = 0;
+
+const gridCanvas = document.getElementById('gridCanvas');
+const gCtx = gridCanvas.getContext('2d');
+const chartCanvas = document.getElementById('chartCanvas');
+const cCtx = chartCanvas.getContext('2d');
+
+function getParams() {
+  return {
+    r0: parseFloat(document.getElementById('r0').value),
+    vac: parseInt(document.getElementById('vac').value) / 100,
+    rec: parseInt(document.getElementById('rec').value)
+  };
+}
+
+function initSim() {
+  const {vac, rec} = getParams();
+  grid = new Uint8Array(GRID_N * GRID_N);
+  infectTimer = new Uint8Array(GRID_N * GRID_N);
+  // Vaccinate fraction
+  const total = GRID_N * GRID_N;
+  const indices = Array.from({length:total},(_,i)=>i).sort(()=>Math.random()-0.5);
+  const vacCount = Math.floor(total * vac);
+  for (let i=0;i<vacCount;i++) grid[indices[i]] = V;
+  // Seed infection in center
+  const cx = Math.floor(GRID_N/2), cy = Math.floor(GRID_N/2);
+  for (let dr=-2;dr<=2;dr++) for(let dc=-2;dc<=2;dc++){
+    const idx=(cy+dr)*GRID_N+(cx+dc);
+    if(idx>=0&&idx<total&&grid[idx]===S){grid[idx]=I;infectTimer[idx]=rec;}
+  }
+  history=[]; step=0;
+  updateStats(); renderGrid(); renderChart();
+  updateHerdThreshold();
+}
+
+function updateHerdThreshold() {
+  const r0 = parseFloat(document.getElementById('r0').value);
+  const thresh = Math.round((1 - 1/r0)*100);
+  document.getElementById('herdThresh').textContent = `Herd Immunity Threshold: ${thresh}% vaccination`;
+}
+
+function simStep() {
+  const {r0, rec} = getParams();
+  const transmitProb = 1 - Math.pow(1 - 1/r0, 1); // simplified per-contact
+  const newGrid = new Uint8Array(grid);
+  const newTimer = new Uint8Array(infectTimer);
+
+  for (let r=0;r<GRID_N;r++) {
+    for (let c=0;c<GRID_N;c++) {
+      const idx = r*GRID_N+c;
+      if (grid[idx] === I) {
+        newTimer[idx]--;
+        if (newTimer[idx] <= 0) newGrid[idx] = R;
+        // Try to infect neighbors
+        const neighbors = [[r-1,c],[r+1,c],[r,c-1],[r,c+1],[r-1,c-1],[r+1,c+1],[r-1,c+1],[r+1,c-1]];
+        for (const [nr,nc] of neighbors) {
+          if(nr<0||nr>=GRID_N||nc<0||nc>=GRID_N) continue;
+          const nidx=nr*GRID_N+nc;
+          if(grid[nidx]===S && Math.random()<transmitProb) {
+            newGrid[nidx]=I; newTimer[nidx]=rec;
+          }
+        }
+      }
+    }
+  }
+  grid=newGrid; infectTimer=newTimer;
+  step++;
+  updateStats(); renderGrid();
+}
+
+function updateStats() {
+  let s=0,i=0,r=0,v=0;
+  for (const cell of grid) { if(cell===S)s++;else if(cell===I)i++;else if(cell===R)r++;else v++; }
+  const total=GRID_N*GRID_N;
+  document.getElementById('sCount').textContent=s;
+  document.getElementById('iCount').textContent=i;
+  document.getElementById('rCount').textContent=r;
+  history.push({s:s/total,i:i/total,r:r/total});
+  if(history.length>MAX_HIST) history.shift();
+  renderChart();
+  if(i===0&&step>0) { playing=false; document.getElementById('playBtn').textContent='▶ Play'; }
+}
+
+const COLORS_CELL=['#e2e8f0','#ef4444','#22c55e','#3b82f6'];
+function renderGrid() {
+  const imageData = gCtx.createImageData(400,400);
+  const data = imageData.data;
+  for(let r=0;r<GRID_N;r++) for(let c=0;c<GRID_N;c++){
+    const v=grid[r*GRID_N+c];
+    const col=COLORS_CELL[v];
+    const R2=parseInt(col.slice(1,3),16),G=parseInt(col.slice(3,5),16),B=parseInt(col.slice(5,7),16);
+    for(let py=0;py<CELL;py++) for(let px=0;px<CELL;px++){
+      const i=((r*CELL+py)*400+(c*CELL+px))*4;
+      data[i]=R2;data[i+1]=G;data[i+2]=B;data[i+3]=255;
+    }
+  }
+  gCtx.putImageData(imageData,0,0);
+}
+
+function renderChart() {
+  const CW=chartCanvas.width, CH=chartCanvas.height;
+  cCtx.fillStyle='#0f172a'; cCtx.fillRect(0,0,CW,CH);
+  if(history.length<2) return;
+  const draw=(key,color)=>{
+    cCtx.beginPath(); cCtx.strokeStyle=color; cCtx.lineWidth=1.5;
+    history.forEach((h,i)=>{
+      const x=i/(MAX_HIST-1)*CW, y=CH-h[key]*CH;
+      i===0?cCtx.moveTo(x,y):cCtx.lineTo(x,y);
+    });
+    cCtx.stroke();
+  };
+  // Herd threshold line
+  const r0=parseFloat(document.getElementById('r0').value);
+  const thresh=1-1/r0;
+  const thY=CH-thresh*CH;
+  cCtx.setLineDash([4,4]); cCtx.strokeStyle='#fbbf24'; cCtx.lineWidth=1;
+  cCtx.beginPath(); cCtx.moveTo(0,thY); cCtx.lineTo(CW,thY); cCtx.stroke();
+  cCtx.setLineDash([]);
+  draw('s','#94a3b8'); draw('i','#ef4444'); draw('r','#22c55e');
+  cCtx.fillStyle='#fbbf24'; cCtx.font='10px monospace';
+  cCtx.fillText(`Herd: ${Math.round(thresh*100)}%`,4,thY-3);
+}
+
+function togglePlay() {
+  playing=!playing;
+  document.getElementById('playBtn').textContent=playing?'⏸ Pause':'▶ Play';
+  if(playing) runLoop();
+}
+
+function runLoop() {
+  if(!playing) return;
+  simStep();
+  animId=setTimeout(runLoop,60);
+}
+
+function stepOnce() { if(!playing) simStep(); }
+
+document.getElementById('r0').addEventListener('input',e=>{document.getElementById('r0Val').textContent=e.target.value;updateHerdThreshold();});
+document.getElementById('vac').addEventListener('input',e=>{document.getElementById('vacVal').textContent=e.target.value+'%';updateHerdThreshold();});
+document.getElementById('rec').addEventListener('input',e=>{document.getElementById('recVal').textContent=e.target.value;});
+
+initSim();
+</script>
+</body>
+</html>
